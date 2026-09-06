@@ -71,3 +71,26 @@ cherche automatiquement le périphérique via mDNS :
 ```bash
 python3 mywhoosh_openbikecontrol_emulator.py
 ```
+
+## Utiliser un CYCPLUS BC2
+
+Le script `cycplus_bc2_openbikecontrol.py` découvre le CYCPLUS BC2 en BLE,
+écoute sa caractéristique notificatrice et publie les boutons comme un
+périphérique OpenBikeControl. Il recherche par défaut le code HID `0x2e` pour
+`+` et `0x2d` pour `-`.
+
+```bash
+python3 cycplus_bc2_openbikecontrol.py
+```
+
+Le nom BLE et la caractéristique peuvent être précisés si nécessaire :
+
+```bash
+python3 cycplus_bc2_openbikecontrol.py \
+   --device "CYCPLUS BC2" \
+   --characteristic 00002a4d-0000-1000-8000-00805f9b34fb
+```
+
+Si les rapports du périphérique utilisent d'autres codes, utilisez `--up-code`
+et `--down-code` en décimal ou hexadécimal. Le Bluetooth doit être activé et
+le périphérique ne doit pas être déjà connecté à une autre application.
