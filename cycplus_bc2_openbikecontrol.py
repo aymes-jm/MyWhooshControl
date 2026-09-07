@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import socket
 import threading
+import time
 import uuid
 from contextlib import closing
 from typing import Optional
@@ -23,6 +24,7 @@ DEFAULT_DEVICE_NAME = "CYCPLUS BC2"
 DEFAULT_UP_CODE = 0x01
 DEFAULT_DOWN_CODE = 0x01
 NORDIC_UART_TX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
+MIN_OBC_FRAME_INTERVAL = 0.05
 
 
 def local_address() -> str:
@@ -44,6 +46,7 @@ class OpenBikeControlDevice:
         self.ready = threading.Event()
         self._client: Optional[socket.socket] = None
         self._lock = threading.Lock()
+        self._last_sent_at = 0.0
 
     def serve(self, stop: threading.Event) -> None:
         with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as server:
@@ -82,11 +85,15 @@ class OpenBikeControlDevice:
         with self._lock:
             if self._client is None:
                 return False
+            delay = self._last_sent_at + MIN_OBC_FRAME_INTERVAL - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
             try:
                 self._client.sendall(payload)
             except OSError:
                 self._client = None
                 return False
+            self._last_sent_at = time.monotonic()
         return True
 
     def close(self) -> None:
@@ -144,16 +151,17 @@ def notify_handler(
             print(f"Rapport BLE [{sender}]: {bytes(data).hex(' ')}")
         current = button_states(bytes(data), up_code, down_code)
         old = previous[0]
-        for index, (was_pressed, is_pressed) in enumerate(zip(old, current), start=1):
-            if not is_pressed and not was_pressed:
+        for index, (was_pressed, is_pressed) in enumerate(
+            zip(old, current), start=1
+        ):
+            if was_pressed == is_pressed:
                 continue
-            states = (0, 1) if is_pressed else (0,)
-            for state in states:
-                if device.send_button(index, state):
-                    action = "appui" if state else "relâchement"
-                    print(f"Bouton OBC {index}: {action} ({bytes(data).hex(' ')})")
-                else:
-                    print("Aucune application OpenBikeControl connectée.")
+            state = int(is_pressed)
+            if device.send_button(index, state):
+                action = "appui" if state else "relâchement"
+                print(f"Bouton OBC {index}: {action} ({bytes(data).hex(' ')})")
+            else:
+                print("Aucune application OpenBikeControl connectée.")
         previous[0] = current
 
     return handle
@@ -194,11 +202,18 @@ async def run_ble(
             print("Caractéristiques BLE notificatrices:")
             for notify_characteristic in notify_characteristics:
                 print(f"- {notify_characteristic}")
-                await client.start_notify(
-                    notify_characteristic,
+                callback = (
                     notify_handler(
                         device, up_code, down_code, previous, debug_reports
-                    ),
+                    )
+                    if notify_characteristic.lower() == selected.lower()
+                    else lambda sender, data: print(
+                        f"Rapport BLE [{sender}]: {bytes(data).hex(' ')}"
+                    )
+                )
+                await client.start_notify(
+                    notify_characteristic,
+                    callback,
                 )
                 subscribed.append(notify_characteristic)
         else:
