@@ -3,6 +3,7 @@ import unittest
 
 from mywhoosh_virtual_shifting import gear_message
 from mywhoosh_link_emulator import handle_message
+from cycplus_bc2_openbikecontrol import button_states
 from openbikecontrol_virtual_device import SHIFT_DOWN, SHIFT_UP
 from mywhoosh_openbikecontrol_emulator import decode_button_state
 
@@ -42,6 +43,11 @@ class EmulatorMessageTests(unittest.TestCase):
 
 
 class OpenBikeControlMessageTests(unittest.TestCase):
+    def test_bc2_uart_button_fields(self):
+        self.assertEqual(button_states(bytes.fromhex("fe ef ff ee 02 06 01 03 00"), 1, 1), (True, False))
+        self.assertEqual(button_states(bytes.fromhex("fe ef ff ee 02 06 03 01 00"), 1, 1), (False, True))
+        self.assertEqual(button_states(bytes.fromhex("fe ef ff ee 02 06 03 03 00"), 1, 1), (False, False))
+
     def test_shift_messages_use_official_binary_format(self):
         self.assertEqual(SHIFT_UP, bytes((0x01, 0x01, 0x01)))
         self.assertEqual(SHIFT_DOWN, bytes((0x01, 0x02, 0x01)))

@@ -20,8 +20,9 @@ SERVICE_UUID = "d273f680-d548-419d-b9d1-fa0472345229"
 SHIFT_UP = bytes((0x01, 0x01, 0x01))
 SHIFT_DOWN = bytes((0x01, 0x02, 0x01))
 DEFAULT_DEVICE_NAME = "CYCPLUS BC2"
-DEFAULT_UP_CODE = 0x2E
-DEFAULT_DOWN_CODE = 0x2D
+DEFAULT_UP_CODE = 0x01
+DEFAULT_DOWN_CODE = 0x01
+NORDIC_UART_TX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 
 
 def local_address() -> str:
@@ -104,8 +105,29 @@ def parse_code(value: str) -> int:
 
 
 def button_states(data: bytes, up_code: int, down_code: int) -> tuple[bool, bool]:
-    """Return whether the configured HID usages are present in a report."""
-    return up_code in data, down_code in data
+    """Return button states from the BC2 UART button fields."""
+    if len(data) <= 7:
+        return False, False
+    return data[6] == up_code, data[7] == down_code
+
+
+def select_notify_characteristic(
+    characteristics: list[str], requested: Optional[str] = None
+) -> str:
+    """Prefer the Nordic UART TX characteristic when no UUID is specified."""
+    if requested:
+        selected = requested.lower()
+        if selected not in {item.lower() for item in characteristics}:
+            raise RuntimeError(
+                f"La caractéristique {requested} n'accepte pas les notifications."
+            )
+        return selected
+    for item in characteristics:
+        if item.lower() == NORDIC_UART_TX:
+            return item
+    if not characteristics:
+        raise RuntimeError("Aucune caractéristique BLE notificatrice trouvée.")
+    return characteristics[0]
 
 
 def notify_handler(
@@ -113,20 +135,25 @@ def notify_handler(
     up_code: int,
     down_code: int,
     previous: list[tuple[bool, bool]],
+    debug_reports: bool = False,
 ):
     """Create a BLE notification callback that emits press and release edges."""
 
-    def handle(_: str, data: bytearray) -> None:
+    def handle(sender: object, data: bytearray) -> None:
+        if debug_reports:
+            print(f"Rapport BLE [{sender}]: {bytes(data).hex(' ')}")
         current = button_states(bytes(data), up_code, down_code)
         old = previous[0]
         for index, (was_pressed, is_pressed) in enumerate(zip(old, current), start=1):
-            if was_pressed == is_pressed:
+            if not is_pressed and not was_pressed:
                 continue
-            if device.send_button(index, int(is_pressed)):
-                action = "appui" if is_pressed else "relâchement"
-                print(f"Bouton OBC {index}: {action} ({bytes(data).hex(' ')})")
-            else:
-                print("Aucune application OpenBikeControl connectée.")
+            states = (0, 1) if is_pressed else (0,)
+            for state in states:
+                if device.send_button(index, state):
+                    action = "appui" if state else "relâchement"
+                    print(f"Bouton OBC {index}: {action} ({bytes(data).hex(' ')})")
+                else:
+                    print("Aucune application OpenBikeControl connectée.")
         previous[0] = current
 
     return handle
@@ -148,6 +175,7 @@ async def run_ble(
     characteristic: Optional[str],
     up_code: int,
     down_code: int,
+    debug_reports: bool,
     stop: threading.Event,
 ) -> None:
     ble_device = await find_device(name)
@@ -159,26 +187,32 @@ async def run_ble(
             for item in service.characteristics
             if "notify" in item.properties
         ]
-        if characteristic:
-            selected = characteristic.lower()
-            if selected not in {item.lower() for item in notify_characteristics}:
-                raise RuntimeError(
-                    f"La caractéristique {characteristic} n'accepte pas les notifications."
-                )
-        elif not notify_characteristics:
-            raise RuntimeError("Aucune caractéristique BLE notificatrice trouvée.")
-        else:
-            selected = notify_characteristics[0]
-        print(f"Notifications BLE sur {selected}")
+        selected = select_notify_characteristic(notify_characteristics, characteristic)
         previous: list[tuple[bool, bool]] = [(False, False)]
-        await client.start_notify(
-            selected, notify_handler(device, up_code, down_code, previous)
-        )
+        subscribed: list[str] = []
+        if debug_reports and not characteristic:
+            print("Caractéristiques BLE notificatrices:")
+            for notify_characteristic in notify_characteristics:
+                print(f"- {notify_characteristic}")
+                await client.start_notify(
+                    notify_characteristic,
+                    notify_handler(
+                        device, up_code, down_code, previous, debug_reports
+                    ),
+                )
+                subscribed.append(notify_characteristic)
+        else:
+            print(f"Notifications BLE sur {selected}")
+            await client.start_notify(
+                selected, notify_handler(device, up_code, down_code, previous, debug_reports)
+            )
+            subscribed.append(selected)
         try:
             while not stop.wait(0.5):
                 await asyncio.sleep(0)
         finally:
-            await client.stop_notify(selected)
+            for notify_characteristic in subscribed:
+                await client.stop_notify(notify_characteristic)
 
 
 def run(args: argparse.Namespace) -> None:
@@ -217,6 +251,7 @@ def run(args: argparse.Namespace) -> None:
                 args.characteristic,
                 args.up_code,
                 args.down_code,
+                args.debug_reports,
                 stop,
             )
         )
@@ -245,6 +280,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--advertise-host", help="Adresse annoncée par mDNS.")
     parser.add_argument("--port", type=int, default=0, help="0 choisit un port libre.")
     parser.add_argument("--name", default="CYCPLUS BC2 OpenBikeControl")
+    parser.add_argument(
+        "--debug-reports",
+        action="store_true",
+        help="affiche chaque rapport BLE reçu pour identifier les codes des boutons",
+    )
     return parser.parse_args()
 
 

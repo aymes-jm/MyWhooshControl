@@ -75,9 +75,10 @@ python3 mywhoosh_openbikecontrol_emulator.py
 ## Utiliser un CYCPLUS BC2
 
 Le script `cycplus_bc2_openbikecontrol.py` découvre le CYCPLUS BC2 en BLE,
-écoute sa caractéristique notificatrice et publie les boutons comme un
-périphérique OpenBikeControl. Il recherche par défaut le code HID `0x2e` pour
-`+` et `0x2d` pour `-`.
+écoute sa caractéristique Nordic UART
+(`6e400003-b5a3-f393-e0a9-e50e24dcca9e`) et publie les boutons comme un
+périphérique OpenBikeControl. Le bouton `+` est indiqué par `0x01` à l'octet
+6 des trames UART, et le bouton `-` par `0x01` à l'octet 7.
 
 ```bash
 python3 cycplus_bc2_openbikecontrol.py
@@ -91,6 +92,6 @@ python3 cycplus_bc2_openbikecontrol.py \
    --characteristic 00002a4d-0000-1000-8000-00805f9b34fb
 ```
 
-Si les rapports du périphérique utilisent d'autres codes, utilisez `--up-code`
-et `--down-code` en décimal ou hexadécimal. Le Bluetooth doit être activé et
+Si les rapports du périphérique utilisent d'autres valeurs, utilisez
+`--up-code` et `--down-code` en décimal ou hexadécimal. Le Bluetooth doit être activé et
 le périphérique ne doit pas être déjà connecté à une autre application.
