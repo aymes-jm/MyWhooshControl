@@ -6,6 +6,7 @@ flashing the script.
 """
 
 import bluetooth
+from machine import Pin
 import mdns
 import network
 import socket
@@ -13,13 +14,18 @@ import time
 from micropython import const
 
 
-WIFI_SSID = ""
-WIFI_PASSWORD = ""
+WIFI_SSID = "KANGOUROUS"
+WIFI_PASSWORD = "SontFous"
 BC2_NAME = "CYCPLUS BC2"
 OBC_PORT = 8765
 UP_CODE = 0x01
 DOWN_CODE = 0x01
 MIN_FRAME_INTERVAL_MS = 50
+LED_PIN = 21
+LED_ON = 1
+LED_OFF = 0
+LED_SINGLE_PERIOD_MS = 2000
+LED_DOUBLE_FLASH_MS = 250
 
 UART_SERVICE_UUID = bluetooth.UUID("6e400001-b5a3-f393-e0a9-e50e24dcca9e")
 UART_RX_UUID = bluetooth.UUID("6e400002-b5a3-f393-e0a9-e50e24dcca9e")
@@ -59,6 +65,50 @@ def _button_states(data):
     return data[6] == UP_CODE, data[7] == DOWN_CODE
 
 
+class StatusLed:
+    """Display BC2 and OpenBikeControl connection status on the LED."""
+
+    def __init__(self):
+        self.pin = Pin(LED_PIN, Pin.OUT, value=LED_OFF)
+        self.pattern = None
+        self.pattern_started_ms = time.ticks_ms()
+        self.last_state = None
+
+    def _set(self, is_on):
+        state = LED_ON if is_on else LED_OFF
+        if state != self.last_state:
+            self.pin.value(state)
+            self.last_state = state
+
+    def update(self, bc2_connected, app_connected):
+        if bc2_connected and app_connected:
+            pattern = "connected"
+        elif bc2_connected or app_connected:
+            pattern = "one_connected"
+        else:
+            pattern = "none_connected"
+
+        now = time.ticks_ms()
+        if pattern != self.pattern:
+            self.pattern = pattern
+            self.pattern_started_ms = now
+
+        elapsed = time.ticks_diff(now, self.pattern_started_ms)
+        if pattern == "connected":
+            self._set(True)
+        elif pattern == "one_connected":
+            phase = elapsed % LED_SINGLE_PERIOD_MS
+            first_flash = phase < LED_DOUBLE_FLASH_MS
+            second_flash = (
+                2 * LED_DOUBLE_FLASH_MS
+                <= phase
+                < 3 * LED_DOUBLE_FLASH_MS
+            )
+            self._set(first_flash or second_flash)
+        else:
+            self._set(elapsed % LED_SINGLE_PERIOD_MS < 1000)
+
+
 class OpenBikeControlServer:
     """Serve one TCP client and send OBC button-state frames."""
 
@@ -72,18 +122,31 @@ class OpenBikeControlServer:
         self.last_sent_ms = 0
 
     def poll(self):
+        self._check_client()
         try:
             client, address = self.server.accept()
         except OSError:
             return
         client.settimeout(0.0)
         if self.client is not None:
+            print("OpenBikeControl déconnecté")
             try:
                 self.client.close()
             except OSError:
                 pass
         self.client = client
         print("OpenBikeControl connecté:", address)
+
+    def _check_client(self):
+        if self.client is None:
+            return
+        try:
+            data = self.client.recv(1)
+        except OSError:
+            return
+        if not data:
+            self.close_client()
+            print("OpenBikeControl déconnecté")
 
     def send_button(self, button_id, state):
         if self.client is None:
@@ -141,7 +204,7 @@ class BC2Central:
         elif event == _IRQ_SCAN_DONE:
             self._scan_done = True
         elif event == _IRQ_PERIPHERAL_CONNECT:
-            _, _, conn_handle = data
+            conn_handle, _, _ = data
             self.conn_handle = conn_handle
             self._service_done = False
             self.ble.gattc_discover_services(conn_handle)
@@ -174,13 +237,15 @@ class BC2Central:
             if conn_handle == self.conn_handle and value_handle == self.tx_handle:
                 self.on_report(bytes(data))
 
-    def connect(self):
+    def connect(self, status_led=None):
         self.address = None
         self._scan_done = False
         print("Recherche BLE:", BC2_NAME)
         self.ble.gap_scan(5000, 30000, 30000)
         deadline = time.ticks_add(time.ticks_ms(), 7000)
         while self.address is None and time.ticks_diff(deadline, time.ticks_ms()) > 0:
+            if status_led is not None:
+                status_led.update(False, False)
             time.sleep_ms(50)
         self.ble.gap_scan(None)
         if self.address is None:
@@ -189,11 +254,15 @@ class BC2Central:
         self.ble.gap_connect(self.address_type, self.address)
         deadline = time.ticks_add(time.ticks_ms(), 10000)
         while self.conn_handle is None and time.ticks_diff(deadline, time.ticks_ms()) > 0:
+            if status_led is not None:
+                status_led.update(False, False)
             time.sleep_ms(50)
         if self.conn_handle is None:
             raise RuntimeError("Connexion BLE impossible")
         deadline = time.ticks_add(time.ticks_ms(), 5000)
         while not self._characteristic_done and time.ticks_diff(deadline, time.ticks_ms()) > 0:
+            if status_led is not None:
+                status_led.update(True, False)
             time.sleep_ms(50)
         if self.tx_handle is None:
             raise RuntimeError("Caractéristique UART TX introuvable")
@@ -203,7 +272,7 @@ class BC2Central:
             b"\x01\x00",
             1,
         )
-        print("Notifications BC2 activées")
+        print("BC2 connecté, notifications activées")
 
     def close(self):
         if self.conn_handle is not None:
@@ -211,19 +280,20 @@ class BC2Central:
         self.ble.active(False)
 
 
-def connect_wifi():
+def connect_wifi(status_led=None):
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
     wlan.connect(WIFI_SSID, WIFI_PASSWORD)
     while not wlan.isconnected():
+        if status_led is not None:
+            status_led.update(False, False)
         time.sleep_ms(250)
     print("Wi-Fi:", wlan.ifconfig()[0])
     return wlan
 
 
 def main():
-    wlan = connect_wifi()
-    obc = OpenBikeControlServer(OBC_PORT)
+    status_led = StatusLed()
     mdns_service = mdns.Service(
         "CYCPLUS BC2 OpenBikeControl",
         "_openbikecontrol._tcp",
@@ -236,9 +306,16 @@ def main():
             "model=BC2 BLE buttons",
         ),
         hostname=network.hostname() or "esp32",
-        address=wlan.ifconfig()[0],
+        address="0.0.0.0",
     )
+    wlan = connect_wifi(status_led)
+    mdns_service.address = wlan.ifconfig()[0]
+    mdns_service.join_multicast()
+    mdns_service.announce()
+    obc = OpenBikeControlServer(OBC_PORT)
     previous = (False, False)
+    previous_bc2_connected = False
+    previous_app_connected = False
 
     def handle_report(data):
         nonlocal previous
@@ -247,16 +324,33 @@ def main():
             zip(previous, current), start=1
         ):
             if was_pressed != is_pressed:
+                button_name = "+" if button_id == 1 else "-"
+                action = "appuyé" if is_pressed else "relâché"
+                print("Bouton", button_name, action)
                 if obc.send_button(button_id, int(is_pressed)):
-                    print("Bouton", button_id, "état", int(is_pressed))
+                    print("Bouton", button_name, "envoyé", int(is_pressed))
         previous = current
 
     bc2 = BC2Central(handle_report)
     try:
-        bc2.connect()
+        bc2.connect(status_led)
+        previous_bc2_connected = bc2.conn_handle is not None
         while True:
             obc.poll()
             mdns_service.poll()
+            bc2_connected = bc2.conn_handle is not None
+            app_connected = obc.client is not None
+            if bc2_connected != previous_bc2_connected:
+                print("BC2 connecté" if bc2_connected else "BC2 déconnecté")
+                previous_bc2_connected = bc2_connected
+            if app_connected != previous_app_connected:
+                print(
+                    "Application OpenBikeControl connectée"
+                    if app_connected
+                    else "Application OpenBikeControl déconnectée"
+                )
+                previous_app_connected = app_connected
+            status_led.update(bc2_connected, app_connected)
             time.sleep_ms(10)
     finally:
         bc2.close()

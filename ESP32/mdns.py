@@ -10,6 +10,10 @@ MDNS_PORT = 5353
 MDNS_TTL = 120
 
 
+def _ipv4_bytes(address):
+    return bytes(int(part) for part in address.split("."))
+
+
 def _name(value):
     value = value.rstrip(".")
     encoded = bytearray()
@@ -60,13 +64,22 @@ class Service:
         except AttributeError:
             pass
         self._socket.bind(("0.0.0.0", MDNS_PORT))
-        membership = socket.inet_aton(MDNS_ADDRESS) + socket.inet_aton("0.0.0.0")
+        self._joined = False
+        try:
+            self.join_multicast()
+        except OSError:
+            pass
+        self._socket.settimeout(0.0)
+        self._last_announcement = 0
+
+    def join_multicast(self):
+        if self._joined:
+            return
+        membership = _ipv4_bytes(MDNS_ADDRESS) + _ipv4_bytes("0.0.0.0")
         self._socket.setsockopt(
             socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership
         )
-        self._socket.settimeout(0.0)
-        self._last_announcement = 0
-        self.announce()
+        self._joined = True
 
     def _records(self):
         instance = self.instance + "." + self.service_type + ".local"
@@ -80,7 +93,7 @@ class Service:
             struct.pack(">HHH", 0, 0, self.port) + _name(host),
         )
         txt = _record(instance, 16, _txt(self.properties))
-        arecord = _record(host, 1, socket.inet_aton(address))
+        arecord = _record(host, 1, _ipv4_bytes(address))
         return ptr + srv + txt + arecord
 
     def _packet(self, goodbye=False):
@@ -97,7 +110,7 @@ class Service:
             ttl,
         )
         txt = _record(instance, 16, _txt(self.properties), ttl)
-        arecord = _record(host, 1, socket.inet_aton(address), ttl)
+        arecord = _record(host, 1, _ipv4_bytes(address), ttl)
         return struct.pack(">HHHHHH", 0, 0x8400, 0, 4, 0, 0) + ptr + srv + txt + arecord
 
     def announce(self):

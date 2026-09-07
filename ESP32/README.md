@@ -1,11 +1,11 @@
 # ESP32 MicroPython
 
-`main.py` relie les boutons BLE du CYCPLUS BC2 à un client OpenBikeControl.
+`bc2_to_mywhoosh.py` relie les boutons BLE du CYCPLUS BC2 à un client OpenBikeControl.
 L'ESP32 se connecte au BC2 comme central BLE, ouvre un serveur TCP sur le port
 `8765` et publie ce serveur avec le module mDNS local `mdns.py`.
 
 Avant le transfert, renseigner `WIFI_SSID`, `WIFI_PASSWORD` et éventuellement
-`BC2_NAME`, `UP_CODE` et `DOWN_CODE` dans `main.py`. Le protocole reprend le
+`BC2_NAME`, `UP_CODE` et `DOWN_CODE` dans `bc2_to_mywhoosh.py`. Le protocole reprend le
 code Python : les octets 6 et 7 des rapports UART indiquent respectivement
 les boutons `+` et `-`, et une trame OBC vaut `01 <bouton> <état>`.
 
